@@ -1,0 +1,125 @@
+{
+  "name": "ajo-savings-circle",
+  "version": "1.0.0",
+  "description": "Rotating savings group (ajo/esusu/tontine) platform with MTN MoMo and Airtel Money payouts",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "migrate": "psql $DATABASE_URL -f db/schema.sql"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.12.0",
+    "dotenv": "^16.4.5",
+    "axios": "^1.7.7",
+    "uuid": "^9.0.1",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "node-cron": "^3.0.3",
+    "express-validator": "^7.2.0",
+    "helmet": "^7.1.0",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}PORT=4000
+NODE_ENV=development
+JWT_SECRET=change_this_to_a_long_random_string
+
+DATABASE_URL=postgresql://user:password@localhost:5432/ajo_db
+
+MOMO_ENV=sandbox
+MOMO_BASE_URL=https://sandbox.momodeveloper.mtn.com
+MOMO_COLLECTION_SUBSCRIPTION_KEY=
+MOMO_COLLECTION_API_USER=
+MOMO_COLLECTION_API_KEY=
+MOMO_DISBURSEMENT_SUBSCRIPTION_KEY=
+MOMO_DISBURSEMENT_API_USER=
+MOMO_DISBURSEMENT_API_KEY=
+MOMO_TARGET_ENVIRONMENT=sandbox
+MOMO_CURRENCY=EUR
+MOMO_CALLBACK_HOST=https://yourdomain.com
+
+AIRTEL_ENV=sandbox
+AIRTEL_BASE_URL=https://openapiuat.airtel.africa
+AIRTEL_CLIENT_ID=
+AIRTEL_CLIENT_SECRET=
+AIRTEL_COUNTRY=UG
+AIRTEL_CURRENCY=UGX
+CREATE TABLE IF NOT EXISTS users (
+    id              SERIAL PRIMARY KEY,
+    full_name       VARCHAR(120) NOT NULL,
+    phone_number    VARCHAR(20) UNIQUE NOT NULL,
+    provider        VARCHAR(10) NOT NULL CHECK (provider IN ('mtn', 'airtel')),
+    password_hash   VARCHAR(255) NOT NULL,
+    referred_by     INTEGER REFERENCES users(id),
+    created_at      TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS groups (
+    id                  SERIAL PRIMARY KEY,
+    name                VARCHAR(120) NOT NULL,
+    contribution_amount NUMERIC(12,2) NOT NULL,
+    currency            VARCHAR(5) NOT NULL DEFAULT 'UGX',
+    cycle_type          VARCHAR(10) NOT NULL DEFAULT 'weekly' CHECK (cycle_type IN ('weekly','monthly','custom')),
+    cycle_days          INTEGER NOT NULL DEFAULT 7,
+    max_members         INTEGER NOT NULL,
+    status              VARCHAR(15) NOT NULL DEFAULT 'forming' CHECK (status IN ('forming','active','completed','cancelled')),
+    current_round       INTEGER NOT NULL DEFAULT 0,
+    created_by          INTEGER REFERENCES users(id),
+    starts_at           TIMESTAMP,
+    created_at          TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS group_members (
+    id              SERIAL PRIMARY KEY,
+    group_id        INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id         INTEGER NOT NULL REFERENCES users(id),
+    payout_position INTEGER NOT NULL,
+    has_been_paid   BOOLEAN NOT NULL DEFAULT FALSE,
+    joined_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (group_id, user_id),
+    UNIQUE (group_id, payout_position)
+);
+
+CREATE TABLE IF NOT EXISTS contributions (
+    id                  SERIAL PRIMARY KEY,
+    group_id            INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id             INTEGER NOT NULL REFERENCES users(id),
+    round_number        INTEGER NOT NULL,
+    amount              NUMERIC(12,2) NOT NULL,
+    provider             VARCHAR(10) NOT NULL CHECK (provider IN ('mtn','airtel')),
+    provider_reference  VARCHAR(100),
+    status              VARCHAR(15) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','successful','failed')),
+    requested_at        TIMESTAMP NOT NULL DEFAULT NOW(),
+    confirmed_at        TIMESTAMP,
+    UNIQUE (group_id, user_id, round_number)
+);
+
+CREATE TABLE IF NOT EXISTS payouts (
+    id                  SERIAL PRIMARY KEY,
+    group_id            INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    recipient_user_id   INTEGER NOT NULL REFERENCES users(id),
+    round_number        INTEGER NOT NULL,
+    amount              NUMERIC(12,2) NOT NULL,
+    provider            VARCHAR(10) NOT NULL CHECK (provider IN ('mtn','airtel')),
+    provider_reference  VARCHAR(100),
+    status              VARCHAR(15) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','successful','failed')),
+    disbursed_at        TIMESTAMP,
+    UNIQUE (group_id, round_number)
+);
+
+CREATE TABLE IF NOT EXISTS referral_rewards (
+    id              SERIAL PRIMARY KEY,
+    referrer_id     INTEGER NOT NULL REFERENCES users(id),
+    referred_id     INTEGER NOT NULL REFERENCES users(id),
+    reward_type     VARCHAR(20) NOT NULL DEFAULT 'fee_rebate',
+    reward_amount   NUMERIC(12,2) NOT NULL DEFAULT 0,
+    triggered_by    VARCHAR(50),
+    created_at      TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_contributions_group_round ON contributions(group_id, round_number);
+CREATE INDEX IF NOT EXISTS idx_group_members_group ON group_members(group_id);
